@@ -302,7 +302,7 @@ class ParserContextFunctionNode extends ParserContextBaseNode {
     }
 
     public boolean isClassConstructor() {
-        return getFlag(FunctionNode.IS_CLASS_CONSTRUCTOR) != 0;
+        return getFlag(FunctionNode.IS_CLASS_OR_STRUCT_CONSTRUCTOR) != 0 && getFlag(FunctionNode.IS_IN_STRUCT) == 0;
     }
 
     public boolean isDerivedConstructor() {

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -123,9 +123,10 @@ public abstract class InitializeInstanceElementsNode extends JavaScriptNode {
     @ExplodeLoop(kind = LoopExplosionKind.FULL_UNROLL)
     @Specialization
     protected static Object withFields(Object target, Object constructor, ClassElementDefinitionRecord[] fields, Object[] initializers, Object brand,
-                    @Cached(value = "createBrandAddNode(brand)", neverDefault = false) @Shared PrivateFieldAddNode privateBrandAddNode,
-                    @Cached("createFieldNodes(fields, context)") InitializeFieldOrAccessorNode[] fieldNodes,
-                    @Cached("createCall()") JSFunctionCallNode callInit) {
+                   @Cached(value = "isStructConstructor(constructor)", neverDefault = false) @SuppressWarnings("unused") boolean isStruct,
+                   @Cached(value = "createBrandAddNode(brand)", neverDefault = false) @Shared PrivateFieldAddNode privateBrandAddNode,
+                   @Cached("createFieldNodes(fields, context, isStruct)") InitializeFieldOrAccessorNode[] fieldNodes,
+                   @Cached("createCall()") JSFunctionCallNode callInit) {
         privateBrandAdd(target, constructor, fields, initializers, brand, privateBrandAddNode);
 
         executeInitializers(target, initializers, callInit);
@@ -170,8 +171,12 @@ public abstract class InitializeInstanceElementsNode extends JavaScriptNode {
         }
     }
 
+    static boolean isStructConstructor(Object constructor) {
+        return JSFunction.isStructConstructor(constructor);
+    }
+
     @NeverDefault
-    static InitializeFieldOrAccessorNode[] createFieldNodes(ClassElementDefinitionRecord[] fields, JSContext context) {
+    static InitializeFieldOrAccessorNode[] createFieldNodes(ClassElementDefinitionRecord[] fields, JSContext context, boolean isStructConstructor) {
         CompilerAsserts.neverPartOfCompilation();
         int size = fields.length;
         InitializeFieldOrAccessorNode[] fieldNodes = new InitializeFieldOrAccessorNode[size];
@@ -184,10 +189,18 @@ public abstract class InitializeInstanceElementsNode extends JavaScriptNode {
             Node writeNode = null;
             if (field.isAutoAccessor() || (field.isPrivate() && field.isField())) {
                 assert field.getBackingStorageKey() != null : key;
-                writeNode = PrivateFieldAddNode.create();
+                if (isStructConstructor) {
+                    writeNode = PrivateFieldSetNode.create(null, null, null, context);
+                } else {
+                    writeNode = PrivateFieldAddNode.create();
+                }
             } else if (field.isField()) {
                 assert JSRuntime.isPropertyKey(key) : key;
-                writeNode = WriteElementNode.create(context, true, true);
+                if (isStructConstructor) {
+                    writeNode = WriteElementNode.create(context, true, false);
+                } else {
+                    writeNode = WriteElementNode.create(context, true, true);
+                }
             } else if (!field.isStaticBlock()) {
                 assert field.isMethod() || field.isAccessor() : field;
                 hasInitializer = false;
@@ -259,6 +272,9 @@ public abstract class InitializeInstanceElementsNode extends JavaScriptNode {
                 // private field or backing storage of an auto accessor
                 assert record.getBackingStorageKey() != null : record.getKey();
                 ((PrivateFieldAddNode) writeNode).execute(target, record.getBackingStorageKey(), value);
+            } else if (writeNode instanceof PrivateFieldSetNode) {
+                assert record.getBackingStorageKey() != null : record.getKey();
+                ((PrivateFieldSetNode) writeNode).executeWith(target, record.getBackingStorageKey(), value);
             } else if (writeNode != null) {
                 // public field
                 assert JSRuntime.isPropertyKey(record.getKey()) : record.getKey();

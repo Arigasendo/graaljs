@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -61,6 +61,8 @@ public final class JSFunctionData {
     @CompilationFinal private volatile CallTarget constructTarget;
     /** [[Construct]] with {@code newTarget}. */
     @CompilationFinal private volatile CallTarget constructNewTarget;
+    /** [[Call]] for struct constructor super calls. */
+    @CompilationFinal private volatile CallTarget callStructInitializerTarget;
 
     private final JSContext context;
     @CompilationFinal private TruffleString name;
@@ -83,14 +85,17 @@ public final class JSFunctionData {
     /**
      * Class constructors require {@code new} and have a not writable {@code prototype} property.
      */
-    private static final int IS_CLASS_CONSTRUCTOR = 1 << 7;
+    private static final int IS_CLASS_OR_STRUCT_CONSTRUCTOR = 1 << 7;
     /** Affects the function object's {@code caller} and {@code arguments} properties. */
     private static final int STRICT_FUNCTION_PROPERTIES = 1 << 8;
     /** Does this function need a newTarget implicit argument when invoked with {@code new}. */
     private static final int NEEDS_NEW_TARGET = 1 << 9;
     /** Is this a bound function. */
     private static final int IS_BOUND = 1 << 10;
-
+    /**
+     *  Function was defined inside Struct. They need reference to home object and mark Struct constructor in combination with IS_CLASS_OR_STRUCT_CONSTRUCTOR.
+     */
+    private static final int IS_STRUCT_METHOD = 1 << 11;
     /** Innermost root node used for lazy creation of the actual call targets. */
     private volatile RootNode rootNode;
     /** Lazy initialization function. */
@@ -102,6 +107,8 @@ public final class JSFunctionData {
                     AtomicReferenceFieldUpdater.newUpdater(JSFunctionData.class, CallTarget.class, "constructTarget");
     private static final AtomicReferenceFieldUpdater<JSFunctionData, CallTarget> UPDATER_CONSTRUCT_NEW_TARGET = //
                     AtomicReferenceFieldUpdater.newUpdater(JSFunctionData.class, CallTarget.class, "constructNewTarget");
+    private static final AtomicReferenceFieldUpdater<JSFunctionData, CallTarget> UPDATER_CALL_STRUCT_INITIALIZER_TARGET = //
+                    AtomicReferenceFieldUpdater.newUpdater(JSFunctionData.class, CallTarget.class, "callStructInitializerTarget");
     private static final AtomicReferenceFieldUpdater<JSFunctionData, RootNode> UPDATER_ROOT_TARGET = //
                     AtomicReferenceFieldUpdater.newUpdater(JSFunctionData.class, RootNode.class, "rootNode");
 
@@ -120,11 +127,11 @@ public final class JSFunctionData {
     }
 
     public static JSFunctionData create(JSContext context, CallTarget callTarget, CallTarget constructTarget, CallTarget constructNewTarget, int length, TruffleString name, boolean isConstructor,
-                    boolean isDerived, boolean isStrict, boolean isBuiltin, boolean needsParentFrame, boolean isGenerator, boolean isAsync, boolean isClassConstructor,
-                    boolean strictFunctionProperties, boolean needsNewTarget, boolean isBound) {
+                    boolean isDerived, boolean isStrict, boolean isBuiltin, boolean needsParentFrame, boolean isGenerator, boolean isAsync, boolean isClassOrStructConstructor,
+                    boolean strictFunctionProperties, boolean needsNewTarget, boolean isBound, boolean isStructMethod) {
         int flags = (isConstructor ? IS_CONSTRUCTOR : 0) | (isDerived ? IS_DERIVED : 0) | (isStrict ? IS_STRICT : 0) | (isBuiltin ? IS_BUILTIN : 0) |
-                        (needsParentFrame ? NEEDS_PARENT_FRAME : 0) | (isGenerator ? IS_GENERATOR : 0) | (isAsync ? IS_ASYNC : 0) | (isClassConstructor ? IS_CLASS_CONSTRUCTOR : 0) |
-                        (strictFunctionProperties ? STRICT_FUNCTION_PROPERTIES : 0) | (needsNewTarget ? NEEDS_NEW_TARGET : 0) | (isBound ? IS_BOUND : 0);
+                        (needsParentFrame ? NEEDS_PARENT_FRAME : 0) | (isGenerator ? IS_GENERATOR : 0) | (isAsync ? IS_ASYNC : 0) | (isClassOrStructConstructor ? IS_CLASS_OR_STRUCT_CONSTRUCTOR : 0) |
+                        (strictFunctionProperties ? STRICT_FUNCTION_PROPERTIES : 0) | (needsNewTarget ? NEEDS_NEW_TARGET : 0) | (isBound ? IS_BOUND : 0) | (isStructMethod ? IS_STRUCT_METHOD : 0);
         return create(context, callTarget, constructTarget, constructNewTarget, length, name, flags);
     }
 
@@ -133,7 +140,7 @@ public final class JSFunctionData {
                     boolean isBuiltin) {
         assert callTarget != null && constructTarget != null;
         return create(context, callTarget, constructTarget, constructTarget, length, name, isConstructor, isDerived, strictMode, isBuiltin, false, false, false, false,
-                        hasStrictProperties(context, strictMode, isBuiltin), false, false);
+                        hasStrictProperties(context, strictMode, isBuiltin), false, false, false);
     }
 
     public static JSFunctionData createCallOnly(JSContext context, CallTarget callTarget, int length, TruffleString name) {
@@ -144,12 +151,12 @@ public final class JSFunctionData {
 
     public static JSFunctionData create(JSContext context, int length, TruffleString name, boolean isConstructor, boolean isDerived, boolean strictMode, boolean isBuiltin) {
         return create(context, null, null, null, length, name, isConstructor, isDerived, strictMode, isBuiltin, false, false, false, false,
-                        hasStrictProperties(context, strictMode, isBuiltin), false, false);
+                        hasStrictProperties(context, strictMode, isBuiltin), false, false, false);
     }
 
     public static JSFunctionData create(JSContext context, CallTarget callTarget, int length, TruffleString name) {
         assert callTarget != null;
-        return create(context, callTarget, callTarget, callTarget, length, name, true, false, false, false, false, false, false, false, false, false, false);
+        return create(context, callTarget, callTarget, callTarget, length, name, true, false, false, false, false, false, false, false, false, false, false, false);
     }
 
     private static boolean hasStrictProperties(JSContext context, boolean strictMode, boolean isBuiltin) {
@@ -173,6 +180,15 @@ public final class JSFunctionData {
         }
         CompilerDirectives.transferToInterpreterAndInvalidate();
         return ensureInitialized(Target.Construct);
+    }
+
+    public CallTarget getCallStructInitializerTarget() {
+        CallTarget result = callStructInitializerTarget;
+        if (result != null) {
+            return result;
+        }
+        CompilerDirectives.transferToInterpreterAndInvalidate();
+        return ensureInitialized(Target.CallStructInitializer);
     }
 
     public CallTarget getConstructNewTarget() {
@@ -202,6 +218,10 @@ public final class JSFunctionData {
 
     public boolean isConstructor() {
         return (flags & IS_CONSTRUCTOR) != 0;
+    }
+
+    public boolean isStructMethod() {
+        return (flags & IS_STRUCT_METHOD) != 0;
     }
 
     public boolean isStrict() {
@@ -236,16 +256,24 @@ public final class JSFunctionData {
         return (flags & IS_DERIVED) != 0;
     }
 
+    public boolean isStructConstructor() {
+        return isStructMethod() && isClassOrStructConstructor();
+    }
+
     public boolean isClassConstructor() {
-        return (flags & IS_CLASS_CONSTRUCTOR) != 0;
+        return !isStructMethod() && isClassOrStructConstructor();
+    }
+
+    public boolean isClassOrStructConstructor() {
+        return (flags & IS_CLASS_OR_STRUCT_CONSTRUCTOR) != 0;
     }
 
     public boolean isPrototypeNotWritable() {
-        return isClassConstructor();
+        return isClassOrStructConstructor();
     }
 
     public boolean requiresNew() {
-        return isClassConstructor();
+        return isClassOrStructConstructor();
     }
 
     public boolean needsNewTarget() {
@@ -312,6 +340,10 @@ public final class JSFunctionData {
 
     public CallTarget setConstructNewTarget(CallTarget constructNewTarget) {
         return setAndGetCallTarget(UPDATER_CONSTRUCT_NEW_TARGET, constructNewTarget);
+    }
+
+    public CallTarget setCallStructInitializerTarget(CallTarget callStructInitializerTarget) {
+        return setAndGetCallTarget(UPDATER_CALL_STRUCT_INITIALIZER_TARGET, callStructInitializerTarget);
     }
 
     public CallTarget getRootTarget() {
@@ -410,7 +442,8 @@ public final class JSFunctionData {
     public enum Target {
         Call(UPDATER_CALL_TARGET),
         Construct(UPDATER_CONSTRUCT_TARGET),
-        ConstructNewTarget(UPDATER_CONSTRUCT_NEW_TARGET);
+        ConstructNewTarget(UPDATER_CONSTRUCT_NEW_TARGET),
+        CallStructInitializer(UPDATER_CALL_STRUCT_INITIALIZER_TARGET);
 
         private final AtomicReferenceFieldUpdater<JSFunctionData, CallTarget> updater;
 
@@ -441,6 +474,7 @@ public final class JSFunctionData {
             initializeCallTarget(functionData, Target.Call, rootTarget);
             initializeCallTarget(functionData, Target.Construct, rootTarget);
             initializeCallTarget(functionData, Target.ConstructNewTarget, rootTarget);
+            initializeCallTarget(functionData, Target.CallStructInitializer, rootTarget);
         }
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -82,10 +82,13 @@ public abstract class ConstructorRootNode extends JavaScriptRootNode {
     }
 
     private Object allocateThisObject(VirtualFrame frame, Object[] arguments, SpecializedNewObjectNode newObjectNode) {
-        // Only base constructors allocate a new object. Derived constructors have to call the super
+        // Only base non struct constructors allocate a new object. Derived non struct constructors have to call the super
         // constructor to get the `this` object (which is then returned).
+
+        // Struct constructors will create initialized and branded `this` object inside newtarget constructor call.
+        // Super constructors are executed using call instead of construct.
         Object thisObject;
-        if (!getFunctionData().isDerived()) {
+        if (!getFunctionData().isDerived() || getFunctionData().isStructConstructor()) {
             Object functionObject = newTarget ? arguments[2] : arguments[1];
             thisObject = newObjectNode.execute(frame, (JSDynamicObject) functionObject);
         } else {
@@ -103,7 +106,7 @@ public abstract class ConstructorRootNode extends JavaScriptRootNode {
             return result;
         }
         // If [[ConstructorKind]] == "base" or result is undefined return this, otherwise throw
-        if (getFunctionData().isDerived()) {
+        if (getFunctionData().isDerived() && !getFunctionData().isStructConstructor()) {
             // Note: TypeError/ReferenceError is thrown in caller context/realm.
             if (result != Undefined.instance) {
                 throw Errors.createTypeErrorDerivedConstructorReturnedIllegalType(this);

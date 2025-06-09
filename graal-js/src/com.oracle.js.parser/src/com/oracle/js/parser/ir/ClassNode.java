@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, 2023, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -49,7 +49,7 @@ import com.oracle.js.parser.ir.visitor.TranslatorNodeVisitor;
 import com.oracle.truffle.api.strings.TruffleString;
 
 /**
- * IR representation for class definitions.
+ * IR representation for class and struct definitions.
  */
 public class ClassNode extends LexicalContextExpression implements LexicalContextScope {
     private final IdentNode ident;
@@ -63,17 +63,15 @@ public class ClassNode extends LexicalContextExpression implements LexicalContex
     private final boolean hasPrivateInstanceMethods;
     private final boolean hasInstanceFieldsOrAccessors;
     private final boolean hasClassElementDecorators;
+    private final boolean isStruct;
 
     public static final TruffleString PRIVATE_CONSTRUCTOR_BINDING_NAME = ParserStrings.constant("#constructor");
 
     /**
-     * Constructor.
-     *
-     * @param token token
-     * @param finish finish
+     * Constructor for a class and struct.
      */
     public ClassNode(long token, int finish, IdentNode ident, Expression classHeritage, ClassElement constructor, List<ClassElement> classElements, List<Expression> classDecorators,
-                    Scope scope, int staticElementCount, boolean hasPrivateMethods, boolean hasPrivateInstanceMethods, boolean hasInstanceFieldsOrAccessors, boolean hasClassElementDecorators) {
+                      Scope scope, int staticElementCount, boolean hasPrivateMethods, boolean hasPrivateInstanceMethods, boolean hasInstanceFieldsOrAccessors, boolean hasClassElementDecorators, boolean isStruct) {
         super(token, finish);
         this.ident = ident;
         this.classHeritage = classHeritage;
@@ -86,6 +84,7 @@ public class ClassNode extends LexicalContextExpression implements LexicalContex
         this.hasInstanceFieldsOrAccessors = hasInstanceFieldsOrAccessors;
         this.hasClassElementDecorators = hasClassElementDecorators;
         this.classDecorators = classDecorators;
+        this.isStruct = isStruct;
         assert staticElementCount == elementCount(classElements, true);
         assert scope.isClosed() : scope;
     }
@@ -104,6 +103,7 @@ public class ClassNode extends LexicalContextExpression implements LexicalContex
         this.hasInstanceFieldsOrAccessors = classNode.hasInstanceFieldsOrAccessors;
         this.hasClassElementDecorators = classNode.hasClassElementDecorators;
         this.classDecorators = classDecorators;
+        this.isStruct = classNode.isStruct;
     }
 
     private static int elementCount(List<ClassElement> classElements, boolean isStatic) {
@@ -114,6 +114,13 @@ public class ClassNode extends LexicalContextExpression implements LexicalContex
             }
         }
         return count;
+    }
+
+    /**
+     * Returns true if this node represents a struct rather than a class.
+     */
+    public boolean isStruct() {
+        return isStruct;
     }
 
     /**
@@ -263,7 +270,7 @@ public class ClassNode extends LexicalContextExpression implements LexicalContex
                 sb.append(" ");
             }
         }
-        sb.append("class");
+        sb.append(isStruct ? "struct" : "class");
         if (ident != null) {
             sb.append(' ');
             ident.toString(sb, printType);

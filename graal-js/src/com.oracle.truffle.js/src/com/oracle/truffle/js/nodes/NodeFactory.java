@@ -83,6 +83,8 @@ import com.oracle.truffle.js.nodes.access.GlobalPropertyNode;
 import com.oracle.truffle.js.nodes.access.GlobalScopeNode;
 import com.oracle.truffle.js.nodes.access.GlobalScopeVarWrapperNode;
 import com.oracle.truffle.js.nodes.access.InitializeInstanceElementsNode;
+import com.oracle.truffle.js.nodes.access.IsStructConstructorNode;
+import com.oracle.truffle.js.nodes.access.PrepareStructInstanceNode;
 import com.oracle.truffle.js.nodes.access.IteratorCompleteUnaryNode;
 import com.oracle.truffle.js.nodes.access.IteratorGetNextValueNode;
 import com.oracle.truffle.js.nodes.access.IteratorIsDoneNode;
@@ -736,6 +738,13 @@ public class NodeFactory {
         return JSFunctionCallNode.createCall(function, target, arguments, false, true);
     }
 
+    public JavaScriptNode createStructConstructorInitializerCall(@SuppressWarnings("unused") JSContext context, JavaScriptNode expression, JavaScriptNode[] arguments) {
+        assert expression instanceof JSTargetableWrapperNode;
+        JavaScriptNode function = ((JSTargetableWrapperNode) expression).getDelegate();
+        JavaScriptNode target = ((JSTargetableWrapperNode) expression).getTarget();
+        return JSFunctionCallNode.createCall(function, target, arguments, false, false, true);
+    }
+
     public AbstractFunctionArgumentsNode createFunctionArguments(JSContext context, JavaScriptNode[] arguments) {
         return JSFunctionArgumentsNode.create(context, arguments);
     }
@@ -777,6 +786,10 @@ public class NodeFactory {
 
     public JavaScriptNode createAccessNewTarget() {
         return AccessIndexedArgumentNode.create(0);
+    }
+
+    public JavaScriptNode createPrepareStructInstanceNode(JSContext context, JavaScriptNode targetNode, JavaScriptNode constructorNode) {
+        return PrepareStructInstanceNode.create(context, targetNode, constructorNode);
     }
 
     public JavaScriptNode createAccessFrameArgument(ScopeFrameNode accessFrame, int argIndex) {
@@ -934,6 +947,14 @@ public class NodeFactory {
         return ObjectLiteralNode.newDataMember(keyName, isStatic, enumerable, value, isField);
     }
 
+    public ObjectLiteralMemberNode createStructDataMember(TruffleString keyName, JavaScriptNode value) {
+        return ObjectLiteralNode.newStructFieldDataMember(keyName, value);
+    }
+
+    public IsStructConstructorNode createIsStructConstructorNode(JavaScriptNode target) {
+        return IsStructConstructorNode.create(target);
+    }
+
     public ObjectLiteralMemberNode createAutoAccessor(TruffleString keyName, boolean isStatic, boolean enumerable, JavaScriptNode value) {
         return ObjectLiteralNode.newAutoAccessor(keyName, isStatic, enumerable, value);
     }
@@ -969,10 +990,10 @@ public class NodeFactory {
 
     public JavaScriptNode createClassDefinition(JSContext context, JSFunctionExpressionNode constructorFunction, JavaScriptNode classHeritage, ObjectLiteralMemberNode[] members,
                     JSWriteFrameSlotNode writeClassBinding, JSWriteFrameSlotNode writeInternalConstructorBrand, JavaScriptNode[] classDecorators, DecoratorListEvaluationNode[] memberDecorators,
-                    TruffleString className, int instanceFieldCount, int staticFieldCount, boolean hasPrivateInstanceMethods, boolean hasInstanceFieldsOrAccessors, JSFrameSlot blockScopeSlot) {
+                    TruffleString className, int instanceFieldCount, int staticFieldCount, boolean hasPrivateInstanceMethods, boolean hasInstanceFieldsOrAccessors, JSFrameSlot blockScopeSlot, boolean isStruct) {
         return ClassDefinitionNode.create(context, constructorFunction, classHeritage, members,
                         writeClassBinding, writeInternalConstructorBrand, className, classDecorators, memberDecorators,
-                        instanceFieldCount, staticFieldCount, hasPrivateInstanceMethods, hasInstanceFieldsOrAccessors, blockScopeSlot);
+                        instanceFieldCount, staticFieldCount, hasPrivateInstanceMethods, hasInstanceFieldsOrAccessors, blockScopeSlot, isStruct);
     }
 
     public JavaScriptNode createMakeMethod(JSContext context, JavaScriptNode function) {
@@ -1000,10 +1021,10 @@ public class NodeFactory {
     }
 
     public JSFunctionData createFunctionData(JSContext context, int length, TruffleString name, boolean isConstructor, boolean isDerived, boolean isStrict, boolean isBuiltin, boolean needsParentFrame,
-                    boolean isGenerator, boolean isAsync, boolean isClassConstructor, boolean strictProperties, boolean needsNewTarget) {
+                    boolean isGenerator, boolean isAsync, boolean isClassOrStructConstructor, boolean strictProperties, boolean needsNewTarget, boolean isStructMethod) {
         return JSFunctionData.create(context, null, null, null, length, name, isConstructor, isDerived, isStrict, isBuiltin, needsParentFrame, isGenerator, isAsync,
-                        isClassConstructor,
-                        strictProperties, needsNewTarget, false);
+                        isClassOrStructConstructor,
+                        strictProperties, needsNewTarget, false, isStructMethod);
     }
 
     public JavaScriptNode createAwait(JSContext context, JSFrameSlot stateSlot, JavaScriptNode expression,

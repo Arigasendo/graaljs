@@ -143,6 +143,7 @@ public enum TokenType {
     ASSERT         (CONTEXTUAL,   "assert"),
     ASYNC          (CONTEXTUAL,   "async"),
     AWAIT          (CONTEXTUAL,   "await"),
+    STRUCT         (CONTEXTUAL,       "struct"),
 //  BOOLEAN        (FUTURE,       "boolean"),
     BREAK          (KEYWORD,      "break"),
 //  BYTE           (FUTURE,       "byte"),

@@ -286,6 +286,8 @@ public final class JSFunction extends JSNonProxy {
 
     public static Object call(JSFunctionObject functionObject, Object thisObject, Object[] argumentValues) {
         assert thisObject != null;
+        assert !functionObject.getFunctionData().isStructMethod();
+
         Object[] arguments = JSArguments.create(thisObject, functionObject, argumentValues);
         return getCallTarget(functionObject).call(arguments);
     }
@@ -389,6 +391,19 @@ public final class JSFunction extends JSNonProxy {
 
     public static boolean isConstructor(Object obj) {
         return obj instanceof JSFunctionObject function && getFunctionData(function).isConstructor();
+    }
+
+    public static boolean isStructConstructor(JSFunctionObject obj) {
+        JSFunctionData functionData = getFunctionData(obj);
+        return functionData.isConstructor() && functionData.isStructConstructor();
+    }
+
+    public static boolean isStructConstructor(Object obj) {
+        return obj instanceof JSFunctionObject function && isStructConstructor(function);
+    }
+
+    public static boolean isDerived(Object obj) {
+        return obj instanceof JSFunctionObject function && getFunctionData(function).isDerived();
     }
 
     public static boolean isGenerator(JSFunctionObject obj) {

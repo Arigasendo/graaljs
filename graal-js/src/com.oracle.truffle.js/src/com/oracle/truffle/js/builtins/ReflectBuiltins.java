@@ -252,6 +252,10 @@ public class ReflectBuiltins extends JSBuiltinsContainer.SwitchEnum<ReflectBuilt
                 newTarget = target;
             } else {
                 newTarget = optionalArgs[0];
+                if (JSFunction.isStructConstructor(target) && target != newTarget) {
+                    errorBranch.enter();
+                    throw Errors.createTypeErrorStructConstructorNewTargetNotStructConstructor(newTarget, target);
+                }
                 if (!isConstructorNode.executeBoolean(newTarget)) {
                     errorBranch.enter();
                     throw Errors.createTypeErrorNotAConstructor(newTarget, getContext());

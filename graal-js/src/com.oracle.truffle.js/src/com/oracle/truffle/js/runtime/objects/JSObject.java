@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -101,6 +101,8 @@ public abstract non-sealed class JSObject extends JSDynamicObject {
     public static final TruffleString GET_PROTO_NAME = Strings.constant("get __proto__");
     public static final TruffleString SET_PROTO_NAME = Strings.constant("set __proto__");
     public static final HiddenKey HIDDEN_PROTO = new HiddenKey("[[Prototype]]");
+    public static final HiddenKey STRUCT_BRAND = new HiddenKey("[[StructBrand]]");
+    public static final HiddenKey STRUCT_BRANDS = new HiddenKey("[[StructBrands]]");
 
     public static final TruffleString NO_SUCH_PROPERTY_NAME = Strings.constant("__noSuchProperty__");
     public static final TruffleString NO_SUCH_METHOD_NAME = Strings.constant("__noSuchMethod__");

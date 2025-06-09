@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2020, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -86,6 +86,8 @@ public abstract class PrivateFieldSetNode extends JSTargetableNode {
         this.valueNode = valueNode;
         this.context = context;
     }
+
+    protected abstract Object executeWith(Object target, Object key, Object value);
 
     @SuppressWarnings("truffle-static-method")
     @Specialization(limit = "3")

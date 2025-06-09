@@ -60,6 +60,7 @@ import com.oracle.truffle.js.nodes.access.InitializeInstanceElementsNode;
 import com.oracle.truffle.js.nodes.access.JSWriteFrameSlotNode;
 import com.oracle.truffle.js.nodes.access.ObjectLiteralNode.ObjectLiteralMemberNode;
 import com.oracle.truffle.js.nodes.access.PropertyGetNode;
+import com.oracle.truffle.js.nodes.access.PropertyNode;
 import com.oracle.truffle.js.nodes.access.PropertySetNode;
 import com.oracle.truffle.js.nodes.control.ResumableNode;
 import com.oracle.truffle.js.nodes.control.YieldException;
@@ -76,6 +77,7 @@ import com.oracle.truffle.js.runtime.objects.JSDynamicObject;
 import com.oracle.truffle.js.runtime.objects.JSObject;
 import com.oracle.truffle.js.runtime.objects.JSShape;
 import com.oracle.truffle.js.runtime.objects.Null;
+import com.oracle.truffle.js.runtime.objects.Undefined;
 import com.oracle.truffle.js.runtime.util.SimpleArrayList;
 
 /**
@@ -101,6 +103,9 @@ public final class ClassDefinitionNode extends NamedEvaluationTargetNode impleme
     @Child private DefineMethodNode defineConstructorMethodNode;
     @Child private PropertySetNode setElementsNode;
     @Child private PropertySetNode setInitializersNode;
+    @Child private PropertySetNode structBrandSetNode;
+    @Child private PropertySetNode structBrandsSetNode;
+    @Child private PropertyNode structBrandsGetNode;
     @Child private InitializeInstanceElementsNode staticElementsNode;
     @Child private PropertySetNode setPrivateBrandNode;
     @Child private SetFunctionNameNode setFunctionName;
@@ -112,12 +117,13 @@ public final class ClassDefinitionNode extends NamedEvaluationTargetNode impleme
     private final boolean hasName;
     private final int instanceElementCount;
     private final int staticElementCount;
+    private final boolean isStruct;
 
     private final BranchProfile errorBranch = BranchProfile.create();
 
     protected ClassDefinitionNode(JSContext context, JSFunctionExpressionNode constructorFunctionNode, JavaScriptNode classHeritageNode, ObjectLiteralMemberNode[] memberNodes,
                     JSWriteFrameSlotNode writeClassBindingNode, JSWriteFrameSlotNode writeInternalConstructorBrand, JavaScriptNode[] classDecorators, DecoratorListEvaluationNode[] memberDecorators,
-                    TruffleString className, int instanceElementsCount, int staticElementCount, boolean hasPrivateInstanceMethods, boolean hasInstanceFieldsOrAccessors, int blockScopeSlot) {
+                    TruffleString className, int instanceElementsCount, int staticElementCount, boolean hasPrivateInstanceMethods, boolean hasInstanceFieldsOrAccessors, int blockScopeSlot, boolean isStruct) {
 
         this.context = context;
         this.constructorFunctionNode = constructorFunctionNode;
@@ -144,15 +150,21 @@ public final class ClassDefinitionNode extends NamedEvaluationTargetNode impleme
         this.setInitializersNode = PropertySetNode.createSetHidden(JSFunction.CLASS_INITIALIZERS_ID, context);
         this.applyDecoratorsToElementDefinition = initApplyDecoratorsToElementDefinitionNodes(context, memberNodes, memberDecorators);
         this.staticExtraInitializersCallNode = JSFunctionCallNode.createCall();
+        this.isStruct = isStruct;
+        if (isStruct) {
+            this.structBrandSetNode = PropertySetNode.createSetHidden(JSObject.STRUCT_BRAND, context);
+            this.structBrandsSetNode = PropertySetNode.createSetHidden(JSObject.STRUCT_BRANDS, context);
+            this.structBrandsGetNode = PropertyNode.createGetHidden(context, null, JSObject.STRUCT_BRANDS);
+        }
     }
 
     public static ClassDefinitionNode create(JSContext context, JSFunctionExpressionNode constructorFunction, JavaScriptNode classHeritage, ObjectLiteralMemberNode[] members,
                     JSWriteFrameSlotNode writeClassBinding, JSWriteFrameSlotNode writeInternalConstructorBrand, TruffleString className, JavaScriptNode[] classDecorators,
                     DecoratorListEvaluationNode[] memberDecorators, int instanceFieldCount, int staticElementCount, boolean hasPrivateInstanceMethods, boolean hasInstanceFieldsOrAccessors,
-                    JSFrameSlot blockScopeSlot) {
+                    JSFrameSlot blockScopeSlot, boolean isStruct) {
         return new ClassDefinitionNode(context, constructorFunction, classHeritage, members, writeClassBinding, writeInternalConstructorBrand, classDecorators, memberDecorators, className,
                         instanceFieldCount, staticElementCount, hasPrivateInstanceMethods, hasInstanceFieldsOrAccessors,
-                        blockScopeSlot != null ? blockScopeSlot.getIndex() : -1);
+                        blockScopeSlot != null ? blockScopeSlot.getIndex() : -1, isStruct);
     }
 
     @Override
@@ -207,6 +219,11 @@ public final class ClassDefinitionNode extends NamedEvaluationTargetNode impleme
                         errorBranch.enter();
                         throw Errors.createTypeError("protoParent is neither Object nor Null", this);
                     }
+                    if (isStruct && !JSFunction.isStructConstructor(superclass)) {
+                        //Structs 1.1.6 8.g Else if superclass does not have a [[IsStructConstructor]] internal slot, then Throw a TypeError exception.
+                        errorBranch.enter();
+                        throw Errors.createTypeError("struct can only extend other struct", this);
+                    }
                     protoParent = (JSDynamicObject) uncheckedProtoParent;
                     constructorParent = superclass;
                 }
@@ -226,6 +243,27 @@ public final class ClassDefinitionNode extends NamedEvaluationTargetNode impleme
              * arguments proto and constructorParent as the optional functionPrototype argument.
              */
             constructor = defineConstructorMethodNode.execute(frame, proto, (JSDynamicObject) constructorParent);
+
+            if (isStruct) {
+                int brandNumber = JSRealm.getAndIncrementGlobalStructSerial(this);
+
+                Object parentBrandsObj = this.structBrandsGetNode.executeWithTarget(constructorParent);
+                assert parentBrandsObj == null || parentBrandsObj instanceof int[] || parentBrandsObj == Undefined.instance;
+                int[] parentBrands = parentBrandsObj == Undefined.instance ? null : (int[]) parentBrandsObj;
+
+                int[] newBrands;
+                if (parentBrands == null) {
+                    newBrands = new int[1];
+                } else {
+                    newBrands = new int[parentBrands.length + 1];
+                    System.arraycopy(parentBrands, 0, newBrands, 1, parentBrands.length);
+                }
+                newBrands[0] = brandNumber;
+
+                this.structBrandSetNode.setValue(proto, brandNumber);
+                this.structBrandSetNode.setValue(constructor, brandNumber);
+                this.structBrandsSetNode.setValue(constructor, newBrands);
+            }
 
             // Perform MakeConstructor(F, writablePrototype=false, proto).
             JSFunction.setClassPrototype(constructor, proto);
@@ -325,6 +363,9 @@ public final class ClassDefinitionNode extends NamedEvaluationTargetNode impleme
         }
 
         executeStaticExtraInitializers(newConstructor, classExtraInitializers.toArray());
+        if (isStruct) {
+            proto.setIntegrityLevel(false, true);
+        }
         return newConstructor;
     }
 
@@ -509,7 +550,8 @@ public final class ClassDefinitionNode extends NamedEvaluationTargetNode impleme
                         staticElementCount,
                         setPrivateBrandNode != null,
                         setElementsNode != null,
-                        defineConstructorMethodNode.getBlockScopeSlot());
+                        defineConstructorMethodNode.getBlockScopeSlot(),
+                        isStruct);
     }
 
     private record ClassDefinitionResumptionRecord(

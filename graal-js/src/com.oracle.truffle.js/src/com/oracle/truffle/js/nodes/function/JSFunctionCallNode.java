@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, 2024, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2018, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -112,6 +112,7 @@ import com.oracle.truffle.js.runtime.builtins.JSFunctionObject;
 import com.oracle.truffle.js.runtime.builtins.JSProxy;
 import com.oracle.truffle.js.runtime.interop.JSInteropUtil;
 import com.oracle.truffle.js.runtime.objects.JSDynamicObject;
+import com.oracle.truffle.js.runtime.objects.JSObject;
 import com.oracle.truffle.js.runtime.objects.Undefined;
 import com.oracle.truffle.js.runtime.util.DebugCounter;
 import com.oracle.truffle.js.runtime.util.SimpleArrayList;
@@ -122,6 +123,7 @@ public abstract class JSFunctionCallNode extends JavaScriptNode implements JavaS
     static final byte CALL = 0;
     static final byte NEW = 1 << 0;
     static final byte NEW_TARGET = 1 << 1;
+    static final byte IS_STRUCT_INTIZIALIZER_CALL = 1 << 2;
 
     protected final byte flags;
     @Child protected AbstractCacheNode cacheNode;
@@ -150,15 +152,23 @@ public abstract class JSFunctionCallNode extends JavaScriptNode implements JavaS
     }
 
     public static JSFunctionCallNode create(boolean isNew, boolean isNewTarget) {
-        return new ExecuteCallNode(createFlags(isNew, isNewTarget));
+        return create(isNew, isNewTarget, false);
     }
 
-    private static byte createFlags(boolean isNew, boolean isNewTarget) {
-        return (isNewTarget ? NEW_TARGET : (isNew ? NEW : CALL));
+    public static JSFunctionCallNode create(boolean isNew, boolean isNewTarget, boolean isStructInitializerCall) {
+        return new ExecuteCallNode(createFlags(isNew, isNewTarget, isStructInitializerCall));
+    }
+
+    private static byte createFlags(boolean isNew, boolean isNewTarget, boolean isStructInitializerCall) {
+        return isStructInitializerCall ? IS_STRUCT_INTIZIALIZER_CALL : (isNewTarget ? NEW_TARGET : (isNew ? NEW : CALL));
     }
 
     public static JSFunctionCallNode createCall(JavaScriptNode function, JavaScriptNode target, JavaScriptNode[] arguments, boolean isNew, boolean isNewTarget) {
-        byte flags = createFlags(isNew, isNewTarget);
+        return createCall(function, target, arguments, isNew, isNewTarget, false);
+    }
+
+    public static JSFunctionCallNode createCall(JavaScriptNode function, JavaScriptNode target, JavaScriptNode[] arguments, boolean isNew, boolean isNewTarget, boolean isStructInitializerCall) {
+        byte flags = createFlags(isNew, isNewTarget, isStructInitializerCall);
         boolean spread = hasSpreadArgument(arguments);
         if (spread) {
             return new CallSpreadNode(target, function, arguments, flags);
@@ -172,7 +182,7 @@ public abstract class JSFunctionCallNode extends JavaScriptNode implements JavaS
     }
 
     public static JSFunctionCallNode createInvoke(JSTargetableNode targetFunction, JavaScriptNode[] arguments, boolean isNew, boolean isNewTarget) {
-        byte flags = createFlags(isNew, isNewTarget);
+        byte flags = createFlags(isNew, isNewTarget, false);
         boolean spread = hasSpreadArgument(arguments);
         if (spread) {
             return new InvokeSpreadNode(targetFunction, arguments, flags);
@@ -201,6 +211,10 @@ public abstract class JSFunctionCallNode extends JavaScriptNode implements JavaS
 
     static boolean isNew(byte flags) {
         return (flags & NEW) != 0;
+    }
+
+    static boolean isStructInitializerCall(byte flags) {
+        return (flags & IS_STRUCT_INTIZIALIZER_CALL) != 0;
     }
 
     private static boolean hasSpreadArgument(JavaScriptNode[] arguments) {
@@ -345,7 +359,7 @@ public abstract class JSFunctionCallNode extends JavaScriptNode implements JavaS
 
     private AbstractCacheNode specializeDirectCall(JSFunctionObject functionObj, AbstractCacheNode head) {
         final JSFunctionData functionData = JSFunction.getFunctionData(functionObj);
-        if (JSConfig.FunctionCacheOnInstance && !functionData.getContext().isMultiContext()) {
+        if (JSConfig.FunctionCacheOnInstance && !functionData.getContext().isMultiContext() || functionData.isStructMethod()) {
             return specializeDirectCallInstance(functionObj, functionData, head);
         } else {
             return specializeDirectCallShared(functionObj, functionData, head);
@@ -368,7 +382,7 @@ public abstract class JSFunctionCallNode extends JavaScriptNode implements JavaS
             }
         }
         if (obsoleteNode == null) {
-            JSFunctionCacheNode directCall = createCallableNode(functionObj, functionData, isNew(flags), isNewTarget(flags), true);
+            JSFunctionCacheNode directCall = createCallableNode(functionObj, functionData, isNew(flags), isNewTarget(flags), true, isStructInitializerCall(flags));
             return insertAtFront(directCall, head);
         } else {
             if (JSConfig.TraceFunctionCache) {
@@ -385,14 +399,14 @@ public abstract class JSFunctionCallNode extends JavaScriptNode implements JavaS
                     newNode = new AnyFunctionDataCacheNode(functionData, callNode);
                 }
             } else {
-                newNode = createCallableNode(functionObj, functionData, isNew(flags), isNewTarget(flags), false);
+                newNode = createCallableNode(functionObj, functionData, isNew(flags), isNewTarget(flags), false, isStructInitializerCall(flags));
             }
             return replaceCached(newNode, head, obsoleteNode, previousNode);
         }
     }
 
     private JSFunctionCacheNode specializeDirectCallShared(JSFunctionObject functionObj, JSFunctionData functionData, AbstractCacheNode head) {
-        final JSFunctionCacheNode directCall = createCallableNode(functionObj, functionData, isNew(flags), isNewTarget(flags), false);
+        final JSFunctionCacheNode directCall = createCallableNode(functionObj, functionData, isNew(flags), isNewTarget(flags), false, isStructInitializerCall(flags));
         return insertAtFront(directCall, head);
     }
 
@@ -936,9 +950,18 @@ public abstract class JSFunctionCallNode extends JavaScriptNode implements JavaS
         }
     }
 
-    protected static JSFunctionCacheNode createCallableNode(JSFunctionObject function, JSFunctionData functionData, boolean isNew, boolean isNewTarget, boolean cacheOnInstance) {
-        CallTarget callTarget = getCallTarget(functionData, isNew, isNewTarget);
+    protected static JSFunctionCacheNode createCallableNode(JSFunctionObject function, JSFunctionData functionData, boolean isNew, boolean isNewTarget, boolean cacheOnInstance, boolean isStructInitializerCall) {
+        CallTarget callTarget = getCallTarget(functionData, isNew, isNewTarget, isStructInitializerCall);
         assert callTarget != null;
+        if (functionData.isStructMethod() && !functionData.isStructConstructor()) {
+            assert cacheOnInstance;
+            if (isNew || isNewTarget) {
+                CompilerDirectives.transferToInterpreter();
+                throw Errors.createTypeError("Struct methods cannot be used as constructors");
+            }
+            return new StructMethodCacheNode(function, callTarget);
+        }
+
         if (function instanceof JSFunctionObject.Bound boundFunction && isBoundFunctionNestingDepthWithinLimits(boundFunction)) {
             if (cacheOnInstance) {
                 return new BoundFunctionInstanceCallNode(boundFunction, isNew, isNewTarget);
@@ -977,8 +1000,10 @@ public abstract class JSFunctionCallNode extends JavaScriptNode implements JavaS
         return false;
     }
 
-    protected static CallTarget getCallTarget(JSFunctionData functionData, boolean isNew, boolean isNewTarget) {
-        if (isNewTarget) {
+    protected static CallTarget getCallTarget(JSFunctionData functionData, boolean isNew, boolean isNewTarget, boolean isStructInitializerCall) {
+        if (isStructInitializerCall) {
+            return functionData.getCallStructInitializerTarget();
+        } else if (isNewTarget) {
             return functionData.getConstructNewTarget();
         } else if (isNew) {
             return functionData.getConstructTarget();
@@ -1182,7 +1207,7 @@ public abstract class JSFunctionCallNode extends JavaScriptNode implements JavaS
             this.isNewTarget = isNewTarget;
             if (JSFunction.isJSFunction(lastFunction)) {
                 JSFunctionObject lastJSFunction = (JSFunctionObject) lastFunction;
-                this.boundNode = createCallableNode(lastJSFunction, JSFunction.getFunctionData(lastJSFunction), isNew, isNewTarget, true);
+                this.boundNode = createCallableNode(lastJSFunction, JSFunction.getFunctionData(lastJSFunction), isNew, isNewTarget, true, false);
             } else if (JSProxy.isJSProxy(lastFunction)) {
                 assert JSRuntime.isCallableProxy((JSDynamicObject) lastFunction);
                 this.boundNode = new JSProxyCallCacheNode(isNew, isNewTarget, function.getJSContext());
@@ -1428,6 +1453,84 @@ public abstract class JSFunctionCallNode extends JavaScriptNode implements JavaS
             return functionData;
         }
     }
+
+    private static final class StructMethodCacheNode extends JSFunctionCacheNode {
+        private final JSFunctionObject functionObj;
+        @Child private DirectCallNode callNode;
+
+        private final PropertyNode getHomeObjectNode;
+        private final PropertyNode getStructBrandNode;
+        private final PropertyNode getStructBrandsNode;
+
+        StructMethodCacheNode(JSFunctionObject functionObj, CallTarget callTarget) {
+            assert functionObj.getFunctionData().isStructMethod();
+            this.functionObj = functionObj;
+            this.callNode = Truffle.getRuntime().createDirectCallNode(callTarget);
+
+            this.getHomeObjectNode = PropertyNode.createGetHidden(this.getJSContext(), null, JSFunction.HOME_OBJECT_ID);
+            this.getStructBrandNode = PropertyNode.createGetHidden(this.getJSContext(), null, JSObject.STRUCT_BRAND);
+            this.getStructBrandsNode = PropertyNode.createGetHidden(this.getJSContext(), null, JSObject.STRUCT_BRANDS);
+        }
+
+        @Override
+        public Object executeCall(Object[] arguments) {
+            if (arguments.length < 1) {
+                CompilerDirectives.transferToInterpreter();
+                throw Errors.createTypeError("Cannot call struct method without 'this' value");
+            }
+
+            Object thisValue = arguments[0];
+            if (!JSObject.isJSObject(thisValue)) {
+                CompilerDirectives.transferToInterpreter();
+                throw Errors.createTypeError("'this' is not an object");
+            }
+
+            Object homeObject = getHomeObjectNode.executeWithTarget(functionObj);
+            assert JSObject.isJSObject(homeObject);
+            //3. Assert: homeObject is not undefined.
+            assert homeObject != Undefined.instance;
+
+            Object homeObjectStructBrand = getStructBrandNode.executeWithTarget(homeObject);
+            assert homeObjectStructBrand instanceof Integer;
+            int homeObjectStructBrandValue = (Integer) homeObjectStructBrand;
+
+            Object thisStructBrands = getStructBrandsNode.executeWithTarget(thisValue);
+            if (!(thisStructBrands instanceof int[]) || JSFunction.isStructConstructor(thisValue)) {
+                throw Errors.createTypeError("'this' is not an instance of a struct");
+            }
+
+            if (!containsStructBrand((int[]) thisStructBrands, homeObjectStructBrandValue)) {
+                throw Errors.createTypeError("'this' is not an instance of the correct struct");
+            }
+
+            return callNode.call(arguments);
+        }
+
+        private static boolean containsStructBrand(int[] structBrands, int brand) {
+            for (int existingBrand : structBrands) {
+                if (existingBrand == brand) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        @Override
+        protected boolean accept(Object function) {
+            return function == functionObj;
+        }
+
+        @Override
+        protected JSFunctionData getFunctionData() {
+            return functionObj.getFunctionData();
+        }
+
+        @Override
+        protected boolean isInstanceCache() {
+            return true;
+        }
+    }
+
 
     private static final class CallerSensitiveBuiltinFunctionInstanceCacheNode extends CallerSensitiveBuiltinCallNode {
         private final JSFunctionObject functionObj;
@@ -1811,8 +1914,8 @@ public abstract class JSFunctionCallNode extends JavaScriptNode implements JavaS
     }
 
     private static class Uncached extends JSFunctionCallNode {
-        static final Uncached CALL = new Uncached(createFlags(false, false));
-        static final Uncached NEW = new Uncached(createFlags(true, false));
+        static final Uncached CALL = new Uncached(createFlags(false, false, false));
+        static final Uncached NEW = new Uncached(createFlags(true, false, false));
 
         protected Uncached(byte flags) {
             super(flags);

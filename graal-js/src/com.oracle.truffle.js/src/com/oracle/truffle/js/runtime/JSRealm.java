@@ -59,6 +59,7 @@ import java.util.Objects;
 import java.util.Random;
 import java.util.SplittableRandom;
 import java.util.WeakHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.graalvm.collections.Pair;
 import org.graalvm.home.HomeFinder;
@@ -249,6 +250,8 @@ public class JSRealm {
     private static final TruffleString GRAALVM_VERSION = Strings.fromJavaString(HomeFinder.getInstance().getVersion());
 
     private static final ContextReference<JSRealm> REFERENCE = ContextReference.create(JavaScriptLanguage.class);
+
+    private final AtomicInteger globalStructSerial = new AtomicInteger(0);
 
     private final JSContext context;
     private final JSContextOptions contextOptions;
@@ -1154,6 +1157,10 @@ public class JSRealm {
 
     public final JSContext getContext() {
         return context;
+    }
+
+    public static int getAndIncrementGlobalStructSerial(Node node) {
+        return getMain(node).globalStructSerial.getAndIncrement();
     }
 
     public static JSRealm getMain(Node node) {

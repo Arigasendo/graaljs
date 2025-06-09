@@ -463,6 +463,7 @@ public class JSContext {
 
     private final JSFunctionFactory boundFunctionFactory;
     private final JSFunctionFactory wrappedFunctionFactory;
+    private final JSFunctionFactory structMethodFactory;
 
     static final PrototypeSupplier functionPrototypeSupplier = JSRealm::getFunctionPrototype;
     static final PrototypeSupplier asyncFunctionPrototypeSupplier = JSRealm::getAsyncFunctionPrototype;
@@ -666,6 +667,7 @@ public class JSContext {
 
         this.boundFunctionFactory = builder.function(functionPrototypeSupplier, true, false, false, true, false);
         this.wrappedFunctionFactory = builder.function(functionPrototypeSupplier, true, false, false, true, false);
+        this.structMethodFactory = builder.function(functionPrototypeSupplier, true, false, false, false, false);
 
         this.ordinaryObjectFactory = builder.create(JSOrdinary.INSTANCE);
         this.arrayFactory = builder.create(JSArray.INSTANCE);
@@ -1512,7 +1514,7 @@ public class JSContext {
         }
         return JSFunctionData.create(context,
                         callTarget, constructTarget, constructNewTarget,
-                        0, Strings.BOUND, constructor, false, true, false, false, false, async, false, true, false, true);
+                        0, Strings.BOUND, constructor, false, true, false, false, false, async, false, true, false, true, false);
     }
 
     private JSAgent getJSAgent() {
@@ -1829,6 +1831,10 @@ public class JSContext {
 
     public JSFunctionFactory getWrappedFunctionFactory() {
         return wrappedFunctionFactory;
+    }
+
+    public JSFunctionFactory getStructMethodFactory() {
+        return structMethodFactory;
     }
 
     JSObjectFactory.RealmData newObjectFactoryRealmData() {

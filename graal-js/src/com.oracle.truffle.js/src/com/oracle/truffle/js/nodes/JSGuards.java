@@ -495,4 +495,8 @@ public final class JSGuards {
     public static boolean hasOverloadedOperators(Object value) {
         return JSOverloadedOperatorsObject.hasOverloadedOperators(value);
     }
+
+    public static boolean isStructConstructor(Object value) {
+        return JSFunction.isStructConstructor(value);
+    }
 }

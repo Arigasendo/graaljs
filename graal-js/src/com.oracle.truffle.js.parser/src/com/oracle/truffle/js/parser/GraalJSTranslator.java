@@ -184,6 +184,7 @@ import com.oracle.truffle.js.runtime.JSErrorType;
 import com.oracle.truffle.js.runtime.JSFrameUtil;
 import com.oracle.truffle.js.runtime.JSRuntime;
 import com.oracle.truffle.js.runtime.Strings;
+import com.oracle.truffle.js.runtime.builtins.JSFunction;
 import com.oracle.truffle.js.runtime.builtins.JSFunctionData;
 import com.oracle.truffle.js.runtime.objects.ScriptOrModule;
 import com.oracle.truffle.js.runtime.objects.Undefined;
@@ -334,12 +335,13 @@ abstract class GraalJSTranslator extends com.oracle.js.parser.ir.visitor.Transla
 
         boolean isMethod = functionNode.isMethod();
         boolean needsNewTarget = functionNode.needsNewTarget();
-        boolean isClassConstructor = functionNode.isClassConstructor();
-        boolean isConstructor = !isArrowFunction && !isGeneratorFunction && !isAsyncFunction && ((!isMethod || context.getEcmaScriptVersion() == 5) || isClassConstructor);
+        boolean isClassOrStructConstructor = functionNode.isClassOrStructConstructor();
+        boolean isConstructor = !isArrowFunction && !isGeneratorFunction && !isAsyncFunction && ((!isMethod || context.getEcmaScriptVersion() == 5) || isClassOrStructConstructor);
         assert !isDerivedConstructor || isConstructor;
         boolean strictFunctionProperties = isStrict || isArrowFunction || isMethod || isGeneratorFunction;
         boolean isBuiltin = false;
         boolean hasSyntheticArguments = functionNode.isScript() && this.argumentNames != null;
+        boolean isStructMethod = functionNode.isStructMethod();
 
         boolean isGlobal;
         boolean isEval = false;
@@ -376,7 +378,7 @@ abstract class GraalJSTranslator extends com.oracle.js.parser.ir.visitor.Transla
             blockScopeSlot = needsParentFrame && environment != null ? environment.getCurrentBlockScopeSlot() : null;
 
             functionData = factory.createFunctionData(context, functionNode.getLength(), functionName, isConstructor, isDerivedConstructor, isStrict, isBuiltin,
-                            needsParentFrame, isGeneratorFunction, isAsyncFunction, isClassConstructor, strictFunctionProperties, needsNewTarget);
+                            needsParentFrame, isGeneratorFunction, isAsyncFunction, isClassOrStructConstructor, strictFunctionProperties, needsNewTarget, isStructMethod);
 
             LexicalContext savedLC = lc.copy();
             Environment parentEnv = environment;
@@ -426,7 +428,7 @@ abstract class GraalJSTranslator extends com.oracle.js.parser.ir.visitor.Transla
                 blockScopeSlot = needsParentFrame && prevEnv != null ? prevEnv.getCurrentBlockScopeSlot() : null;
 
                 functionData = factory.createFunctionData(context, functionNode.getLength(), functionName, isConstructor, isDerivedConstructor, isStrict, isBuiltin,
-                                needsParentFrame, isGeneratorFunction, isAsyncFunction, isClassConstructor, strictFunctionProperties, needsNewTarget);
+                                needsParentFrame, isGeneratorFunction, isAsyncFunction, isClassOrStructConstructor, strictFunctionProperties, needsNewTarget, isStructMethod);
 
                 if (functionNode.isModule()) {
                     functionRoot = createModuleRoot(functionNode, functionData, currentFunction, body);
@@ -944,8 +946,9 @@ abstract class GraalJSTranslator extends com.oracle.js.parser.ir.visitor.Transla
         FunctionNode function = lc.getCurrentFunction();
         FunctionEnvironment currentFunction = currentFunction();
 
-        if (needsThisSlot(function, currentFunction) && !function.isDerivedConstructor()) {
-            // Derived constructor: `this` binding is initialized after super() call.
+        if (needsThisSlot(function, currentFunction) && !function.isDerivedConstructor() || function.isStructConstructor()) {
+            // Derived class constructor: `this` binding is initialized after super() call.
+            // struct constructor: only
             assert environment.findThisVar() != null;
             init.add(prepareThis(function));
         }
@@ -1249,14 +1252,22 @@ abstract class GraalJSTranslator extends com.oracle.js.parser.ir.visitor.Transla
 
     private JavaScriptNode prepareThis(FunctionNode functionNode) {
         // In a derived class constructor, we cannot get the this value from the arguments.
-        assert !currentFunction().getNonArrowParentFunction().isDerivedConstructor();
+        assert !currentFunction().getNonArrowParentFunction().isDerivedConstructor() || functionNode.isStructConstructor();
         VarRef thisVar = environment.findThisVar();
         boolean isLexicalThis = functionNode.isArrow();
         JavaScriptNode getThisNode = isLexicalThis ? factory.createAccessLexicalThis() : factory.createAccessThis();
         if (!environment.isStrictMode() && !isLexicalThis) {
             getThisNode = factory.createPrepareThisBinding(context, getThisNode);
         }
-        if (functionNode.isClassConstructor()) {
+        if (functionNode.isStructConstructor()) {
+            //Struct instance must be initialized for outermost constructor call.
+            //Struct constructor call will only have new target for outermost call as super calls are done with call instead of construct.
+            JavaScriptNode newTargetNode = factory.createAccessNewTarget();
+            JavaScriptNode uninitialized = factory.createBinary(context, BinaryOperation.IDENTICAL, newTargetNode, factory.createConstantUndefined());
+            getThisNode = factory.createIf(uninitialized,
+                    getThisNode,
+                    factory.createPrepareStructInstanceNode(context, getThisNode, newTargetNode));
+        } else if (functionNode.isClassConstructor()) {
             getThisNode = initializeInstanceElements(getThisNode);
         }
         return thisVar.createWriteNode(getThisNode);
@@ -1721,6 +1732,12 @@ abstract class GraalJSTranslator extends com.oracle.js.parser.ir.visitor.Transla
             // Allocate the this slot to ensure InitializeInstanceElements is performed
             // regardless of whether the class constructor itself uses `this`.
             // Note: the this slot could be elided in this case.
+            return true;
+        }
+        if (function.isStructConstructor()) {
+            //Struct needs to initialize all elements of all derived classes inside base constructor
+            // before any constructor call
+            // Super calls are also handled by normal calls
             return true;
         }
         return false;
@@ -2628,15 +2645,18 @@ abstract class GraalJSTranslator extends com.oracle.js.parser.ir.visitor.Transla
     /**
      * Initialize derived constructor this value.
      */
-    private JavaScriptNode initializeThis(JavaScriptNode thisValueNode) {
+    private JavaScriptNode initializeThis(JavaScriptNode thisValueNode, boolean isStructConstructor) {
         VarRef thisVar = environment.findThisVar();
         // (GR-2061) we don't have to do this check if super() can be called only once, provably
         // (incl. possible super calls in nested arrow functions)
         // => return factory.createWriteNode(thisVarNode, thisValueNode, context);
         VarRef tempVar = environment.createTempVar();
         JavaScriptNode uninitialized = factory.createBinary(context, BinaryOperation.IDENTICAL, thisVar.createReadNode(), factory.createConstantUndefined());
+
+        JavaScriptNode thisVarWriteNode = thisVar.createWriteNode(tempVar.createReadNode());
+        thisVarWriteNode = isStructConstructor ? thisVarWriteNode : initializeInstanceElements(thisVarWriteNode);
         return factory.createIf(factory.createDual(context, tempVar.createWriteNode(thisValueNode), uninitialized),
-                        initializeInstanceElements(thisVar.createWriteNode(tempVar.createReadNode())),
+                        thisVarWriteNode,
                         factory.createThrowError(JSErrorType.ReferenceError, SUPER_CALLED_TWICE));
     }
 
@@ -2647,7 +2667,11 @@ abstract class GraalJSTranslator extends com.oracle.js.parser.ir.visitor.Transla
         }
 
         JavaScriptNode constructor = factory.createAccessCallee(currentFunction().getThisFunctionLevel());
-        return factory.createInitializeInstanceElements(context, thisValueNode, constructor);
+        if (JSFunction.isStructConstructor(constructor)) {
+            return thisValueNode;
+        } else {
+            return factory.createInitializeInstanceElements(context, thisValueNode, constructor);
+        }
     }
 
     private JavaScriptNode createCallEvalNode(JavaScriptNode function, JavaScriptNode[] args) {
@@ -2663,11 +2687,24 @@ abstract class GraalJSTranslator extends com.oracle.js.parser.ir.visitor.Transla
     }
 
     private JavaScriptNode createCallDirectSuper(JavaScriptNode function, JavaScriptNode[] args, boolean inDefaultDerivedConstructor) {
+        JavaScriptNode superIsStructConstructorNode = factory.createIsStructConstructorNode(function);
         if (inDefaultDerivedConstructor) {
             VarRef thisVar = environment.findThisVar();
-            return initializeInstanceElements(thisVar.createWriteNode(factory.createDefaultDerivedConstructorSuperCall(function)));
+            JavaScriptNode writeNode = thisVar.createWriteNode(factory.createDefaultDerivedConstructorSuperCall(function));
+
+            //For structs: if struct initializer is empty (defaultConstructor) return undefined. 'this' is not rebound
+            return factory.createIf(superIsStructConstructorNode,
+                    factory.createConstantUndefined(),
+                    initializeInstanceElements(writeNode));
         } else {
-            return initializeThis(factory.createFunctionCallWithNewTarget(context, function, insertNewTargetArg(args)));
+            JavaScriptNode classSuperCall = factory.createFunctionCallWithNewTarget(context, function, insertNewTargetArg(args));
+            JavaScriptNode thisInitializedClassSupercall = initializeThis(classSuperCall, JSFunction.isStructConstructor(function));
+
+            JavaScriptNode structConstructorSupercall = factory.createStructConstructorInitializerCall(context, function, args);
+
+            return factory.createIf(superIsStructConstructorNode,
+                        structConstructorSupercall,
+                        thisInitializedClassSupercall);
         }
     }
 
@@ -3273,11 +3310,13 @@ abstract class GraalJSTranslator extends com.oracle.js.parser.ir.visitor.Transla
 
     @Override
     public JavaScriptNode enterObjectNode(ObjectNode objectNode) {
-        ArrayList<ObjectLiteralMemberNode> members = transformPropertyDefinitionList(objectNode.getElements(), false, null);
+        ArrayList<ObjectLiteralMemberNode> members = transformPropertyDefinitionList(objectNode.getElements(), false, null, false);
         return tagExpression(factory.createObjectLiteral(context, members), objectNode);
     }
 
-    private ArrayList<ObjectLiteralMemberNode> transformPropertyDefinitionList(List<? extends PropertyNode> properties, boolean isClass, Symbol classNameSymbol) {
+    private ArrayList<ObjectLiteralMemberNode> transformPropertyDefinitionList(List<? extends PropertyNode> properties, boolean isClass, Symbol classNameSymbol, boolean isInStruct) {
+        assert !isInStruct || isClass;
+
         ArrayList<ObjectLiteralMemberNode> members = new ArrayList<>(properties.size());
         for (int i = 0; i < properties.size(); i++) {
             PropertyNode property = properties.get(i);
@@ -3285,7 +3324,7 @@ abstract class GraalJSTranslator extends com.oracle.js.parser.ir.visitor.Transla
 
             final ObjectLiteralMemberNode member;
             if (property.getValue() != null || (isClass && ((ClassElement) property).isClassFieldOrAutoAccessor())) {
-                member = enterObjectPropertyNode(property, isClass, classNameSymbol);
+                member = enterObjectPropertyNode(property, isClass, classNameSymbol, isInStruct);
             } else if (property.isRest()) {
                 assert !isClass;
                 JavaScriptNode from = transform(((UnaryNode) property.getKey()).getExpression());
@@ -3346,7 +3385,7 @@ abstract class GraalJSTranslator extends com.oracle.js.parser.ir.visitor.Transla
         return function;
     }
 
-    private JavaScriptNode transformPropertyValue(Expression propertyValue, Symbol classNameSymbol) {
+    private JavaScriptNode transformPropertyValue(Expression propertyValue, Symbol classNameSymbol, boolean isInStruct) {
         if (propertyValue == null) {
             // class field without an initializer
             return factory.createConstantUndefined();
@@ -3365,15 +3404,17 @@ abstract class GraalJSTranslator extends com.oracle.js.parser.ir.visitor.Transla
             classNameVarRef.setHasBeenDeclared(false);
         }
 
-        if (propertyValue instanceof FunctionNode && ((FunctionNode) propertyValue).needsSuper()) {
-            assert ((FunctionNode) propertyValue).isMethod();
-            value = factory.createMakeMethod(context, value);
+        if (propertyValue instanceof FunctionNode functionNode) {
+            if (functionNode.needsSuper() || (isInStruct && functionNode.isMethod())) {
+                assert functionNode.isMethod();
+                value = factory.createMakeMethod(context, value);
+            }
         }
         return value;
     }
 
-    private ObjectLiteralMemberNode enterObjectPropertyNode(PropertyNode property, boolean isClass, Symbol classNameSymbol) {
-        JavaScriptNode value = transformPropertyValue(property.getValue(), classNameSymbol);
+    private ObjectLiteralMemberNode enterObjectPropertyNode(PropertyNode property, boolean isClass, Symbol classNameSymbol, boolean isInStruct) {
+        JavaScriptNode value = transformPropertyValue(property.getValue(), classNameSymbol, isInStruct);
 
         boolean enumerable = !isClass || property.isClassField();
         if (isClass && property.isPrivate()) {
@@ -3407,7 +3448,12 @@ abstract class GraalJSTranslator extends com.oracle.js.parser.ir.visitor.Transla
             return factory.createStaticBlockMember(value);
         } else {
             assert property.getKey() != null;
-            return factory.createDataMember(property.getKeyNameTS(), property.isStatic(), enumerable, value, property.isClassField());
+            if (isInStruct && !property.isPrivate() && property.isClassField() && !property.isStatic()) {
+                assert enumerable;
+                return factory.createStructDataMember(property.getKeyNameTS(), value);
+            } else {
+                return factory.createDataMember(property.getKeyNameTS(), property.isStatic(), enumerable, value, property.isClassField());
+            }
         }
     }
 
@@ -3785,7 +3831,7 @@ abstract class GraalJSTranslator extends com.oracle.js.parser.ir.visitor.Transla
             try (EnvironmentCloseable privateEnv = new EnvironmentCloseable(newPrivateEnvironment(classBodyScope))) {
                 JavaScriptNode classFunction = transform(classNode.getConstructor().getValue());
 
-                List<ObjectLiteralMemberNode> members = transformPropertyDefinitionList(classNode.getClassElements(), true, classNameSymbol);
+                List<ObjectLiteralMemberNode> members = transformPropertyDefinitionList(classNode.getClassElements(), true, classNameSymbol, classNode.isStruct());
 
                 DecoratorListEvaluationNode[] decoratedElementNodes = classNode.hasClassElementDecorators() ? transformClassElementsDecorators(classNode.getClassElements()) : null;
                 JavaScriptNode[] classDecorators = transformClassDecorators(classNode.getDecorators());
@@ -3801,7 +3847,7 @@ abstract class GraalJSTranslator extends com.oracle.js.parser.ir.visitor.Transla
                                 members.toArray(ObjectLiteralMemberNode.EMPTY), writeClassBinding, writeInternalConstructorBrand,
                                 classDecorators, decoratedElementNodes, className,
                                 classNode.getInstanceElementCount(), classNode.getStaticElementCount(), classNode.hasPrivateInstanceMethods(), classNode.hasInstanceFieldsOrAccessors(),
-                                environment.getCurrentBlockScopeSlot());
+                                environment.getCurrentBlockScopeSlot(), classNode.isStruct());
                 classDefinition = privateEnv.wrapBlockScope(classDefinition);
             }
 

@@ -101,6 +101,7 @@ import static com.oracle.js.parser.TokenType.SPREAD_ARRAY;
 import static com.oracle.js.parser.TokenType.SPREAD_OBJECT;
 import static com.oracle.js.parser.TokenType.STATIC;
 import static com.oracle.js.parser.TokenType.STRING;
+import static com.oracle.js.parser.TokenType.STRUCT;
 import static com.oracle.js.parser.TokenType.SUPER;
 import static com.oracle.js.parser.TokenType.TEMPLATE;
 import static com.oracle.js.parser.TokenType.TEMPLATE_HEAD;
@@ -964,6 +965,13 @@ public class Parser extends AbstractParser {
         return env.ecmaScriptVersion >= ES_2022;
     }
 
+    /**
+     * version supports Structs.
+     */
+    private boolean isStructSupportVersion() {
+        return env.ecmaScriptVersion >= ES_STAGING;
+    }
+
     private boolean isImportDefer() {
         return env.ecmaScriptVersion >= ES_STAGING;
     }
@@ -1563,6 +1571,15 @@ public class Parser extends AbstractParser {
                     return;
                 }
                 break;
+            case STRUCT:
+                if (isStructSupportVersion()) {
+                    if (singleStatement) {
+                        throw error(AbstractParser.message(MSG_EXPECTED_STMT, CONTEXT_CLASS_DECLARATION), token);
+                    }
+                    structDeclaration(yield, await, false);
+                    return;
+                }
+                break;
             case ASYNC:
                 if (isAsync() && lookaheadIsAsyncFunction()) {
                     if (singleStatement) {
@@ -1610,7 +1627,7 @@ public class Parser extends AbstractParser {
             final long propertyToken = token;
             final int propertyLine = line;
             next();
-            final int flags = CONSTRUCTOR_NAME_TS.equals(ident) ? FunctionNode.IS_CLASS_CONSTRUCTOR : FunctionNode.IS_METHOD;
+            final int flags = CONSTRUCTOR_NAME_TS.equals(ident) ? FunctionNode.IS_CLASS_OR_STRUCT_CONSTRUCTOR : FunctionNode.IS_METHOD;
             addPropertyFunctionStatement(propertyMethodFunction(identNode, propertyToken, propertyLine, false, flags, false, false));
             return true;
         }
@@ -1653,10 +1670,48 @@ public class Parser extends AbstractParser {
                 className = bindingIdentifier(yield, await, CONTEXT_CLASS_NAME);
             }
 
-            ClassNode classExpression = classTail(classLineNumber, classToken, className, yield, await, classDecorators);
+            ClassNode classExpression = classTail(classLineNumber, classToken, className, yield, await, classDecorators, false);
 
             if (!defaultExport) {
                 VarNode classVar = new VarNode(classLineNumber, Token.recast(classExpression.getToken(), LET), classExpression.getFinish(), className, classExpression, VarNode.IS_LET);
+                appendStatement(classVar);
+                declareVar(lc.getCurrentScope(), classVar);
+            }
+            return classExpression;
+        } finally {
+            isStrictMode = oldStrictMode;
+        }
+    }
+
+    /**
+     * Parse ClassDeclaration.
+     *
+     * <pre>
+     * ClassDeclaration[Yield, Await, Default] :
+     *   DecoratorList[?Yield, ?Await]opt class BindingIdentifier[?Yield, ?Await] ClassTail[?Yield, ?Await]
+     *   [+Default] DecoratorList[?Yield, ?Await]opt class ClassTail[?Yield, ?Await]
+     * </pre>
+     *
+     * @return Class expression node.
+     */
+    private ClassNode structDeclaration(boolean yield, boolean await, boolean defaultExport) {
+        assert type == STRUCT;
+        int structLineNumber = line;
+        long structToken = token;
+        next();
+
+        boolean oldStrictMode = isStrictMode;
+        isStrictMode = true;
+        try {
+            IdentNode structName = null;
+            if (!defaultExport || isBindingIdentifier()) {
+                structName = bindingIdentifier(yield, await, CONTEXT_CLASS_NAME);
+            }
+
+            ClassNode classExpression = classTail(structLineNumber, structToken, structName, yield, await, List.of(), true);
+
+            if (!defaultExport) {
+                VarNode classVar = new VarNode(structLineNumber, Token.recast(classExpression.getToken(), LET), classExpression.getFinish(), structName, classExpression, VarNode.IS_LET);
                 appendStatement(classVar);
                 declareVar(lc.getCurrentScope(), classVar);
             }
@@ -1695,7 +1750,7 @@ public class Parser extends AbstractParser {
                 className = bindingIdentifier(yield, await, CONTEXT_CLASS_NAME);
             }
 
-            return classTail(classLineNumber, classToken, className, yield, await, classDecorators);
+            return classTail(classLineNumber, classToken, className, yield, await, classDecorators, false);
         } finally {
             isStrictMode = oldStrictMode;
         }
@@ -1721,7 +1776,7 @@ public class Parser extends AbstractParser {
      *      ;
      * </pre>
      */
-    private ClassNode classTail(int classLineNumber, long classToken, IdentNode className, boolean yield, boolean await, List<Expression> classDecorators) {
+    private ClassNode classTail(int classLineNumber, long classToken, IdentNode className, boolean yield, boolean await, List<Expression> classDecorators, boolean isStruct) {
         assert isStrictMode;
         Scope classHeadScope = Scope.createClassHead(lc.getCurrentScope());
         if (className != null) {
@@ -1842,7 +1897,7 @@ public class Parser extends AbstractParser {
                         throw error(AbstractParser.message(MSG_AUTO_ACCESSOR_NOT_FIELD));
                     }
                     classElement = methodDefinition(classElementName, isStatic, classHeritage != null, generator, async, classElementToken, classElementLine, yield, await, nameTokenType, computed,
-                                    classElementDecorators);
+                                    classElementDecorators, isStruct);
 
                     if (!classElement.isComputed() && classElement.isAccessor()) {
                         if (classElement.isPrivate()) {
@@ -1910,7 +1965,7 @@ public class Parser extends AbstractParser {
             int classFinish = Token.descPosition(lastToken) + Token.descLength(lastToken);
 
             if (constructor == null) {
-                constructor = createDefaultClassConstructor(classLineNumber, classToken, lastToken, className, classHeritage != null);
+                constructor = createDefaultClassConstructor(classLineNumber, classToken, lastToken, className, classHeritage != null, isStruct);
             } else {
                 // constructor takes on source section of class declaration/expression
                 FunctionNode ctor = (FunctionNode) constructor.getValue();
@@ -1936,7 +1991,7 @@ public class Parser extends AbstractParser {
             classScope.close();
             classHeadScope.close();
             return new ClassNode(classToken, classFinish, className, classHeritage, constructor, classElements, classDecorators, classScope,
-                            staticElementCount, hasPrivateMethods, hasPrivateInstanceMethods, hasInstanceFieldsOrAccessors, hasClassElementDecorators);
+                            staticElementCount, hasPrivateMethods, hasPrivateInstanceMethods, hasInstanceFieldsOrAccessors, hasClassElementDecorators, isStruct);
         } finally {
             lc.pop(classNode);
         }
@@ -2038,12 +2093,13 @@ public class Parser extends AbstractParser {
         }
     }
 
-    private ClassElement createDefaultClassConstructor(int classLineNumber, long classToken, long lastToken, IdentNode className, boolean derived) {
+    private ClassElement createDefaultClassConstructor(int classLineNumber, long classToken, long lastToken, IdentNode className, boolean derived, boolean isStruct) {
         final int ctorFinish = finish;
         final List<Statement> statements;
         final List<IdentNode> parameters;
         final long identToken = Token.recast(classToken, TokenType.IDENT);
-        if (derived) {
+        //Struct default constructors do nothing except for this instance initialization
+        if (derived && !isStruct) {
             IdentNode superIdent = new IdentNode(identToken, ctorFinish, lexer.stringIntern(SUPER.getNameTS())).setIsDirectSuper();
             IdentNode argsIdent = new IdentNode(identToken, ctorFinish, lexer.stringIntern(ARGS)).setIsRestParameter();
             Expression spreadArgs = new UnaryNode(Token.recast(classToken, TokenType.SPREAD_ARGUMENT), argsIdent);
@@ -2054,7 +2110,7 @@ public class Parser extends AbstractParser {
             statements = List.of();
             parameters = List.of();
         }
-        int functionFlags = FunctionNode.IS_METHOD | FunctionNode.IS_CLASS_CONSTRUCTOR;
+        int functionFlags = FunctionNode.IS_METHOD | FunctionNode.IS_CLASS_OR_STRUCT_CONSTRUCTOR;
         ParserContextFunctionNode function = createParserContextFunctionNode(className, classToken, functionFlags, classLineNumber, parameters, 0);
         function.setLastToken(lastToken);
 
@@ -2065,6 +2121,9 @@ public class Parser extends AbstractParser {
         if (derived) {
             function.setFlag(FunctionNode.IS_DERIVED_CONSTRUCTOR);
             function.setFlag(FunctionNode.HAS_DIRECT_SUPER);
+        }
+        if (isStruct) {
+            function.setFlag(FunctionNode.IS_IN_STRUCT);
         }
         if (className == null) {
             function.setFlag(FunctionNode.IS_ANONYMOUS);
@@ -2079,8 +2138,11 @@ public class Parser extends AbstractParser {
     }
 
     private ClassElement methodDefinition(Expression propertyName, boolean isStatic, boolean derived, boolean generator, boolean async, long startToken, int methodLine, boolean yield,
-                    boolean await, TokenType nameTokenType, boolean computed, List<Expression> classElementDecorators) {
+                    boolean await, TokenType nameTokenType, boolean computed, List<Expression> classElementDecorators, boolean isStruct) {
         int flags = FunctionNode.IS_METHOD;
+        if (isStruct && !isStatic) {
+            flags |= FunctionNode.IS_IN_STRUCT;
+        }
         boolean isPrivate = false;
         if (!computed) {
             final String name = ((PropertyKey) propertyName).getPropertyName();
@@ -2096,7 +2158,7 @@ public class Parser extends AbstractParser {
                                 methodDefinition.computed);
             } else {
                 if (!isStatic && !generator && name.equals(CONSTRUCTOR_NAME)) {
-                    flags |= FunctionNode.IS_CLASS_CONSTRUCTOR;
+                    flags |= FunctionNode.IS_CLASS_OR_STRUCT_CONSTRUCTOR;
                     if (derived) {
                         flags |= FunctionNode.IS_DERIVED_CONSTRUCTOR;
                     }
@@ -7424,6 +7486,13 @@ public class Parser extends AbstractParser {
                         assignmentExpression = classDeclaration(yield, await, true);
                         ident = ((ClassNode) assignmentExpression).getIdent();
                         break;
+                    case STRUCT:
+                        if (isStructSupportVersion()) {
+                            assignmentExpression = structDeclaration(yield, await, true);
+                            ident = ((ClassNode) assignmentExpression).getIdent();
+                            break;
+                        }
+                        //fallthrough
                     default:
                         if (isAsync() && lookaheadIsAsyncFunction()) {
                             assignmentExpression = asyncFunctionDeclaration(false, true, yield, await, true);

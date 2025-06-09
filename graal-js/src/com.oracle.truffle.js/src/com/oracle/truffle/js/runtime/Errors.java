@@ -172,6 +172,12 @@ public final class Errors {
     }
 
     @TruffleBoundary
+    public static JSException createTypeErrorStructConstructorNewTargetNotStructConstructor(Object newTarget, Object constructor) {
+        String msg = String.format("Newtarget %s is not equal to struct constructor %s", JSRuntime.safeToString(newTarget), JSRuntime.safeToString(constructor));
+        return createTypeError(msg);
+    }
+
+    @TruffleBoundary
     public static JSException createTypeErrorNotAConstructor(Object object, Node originatingNode, JSContext context) {
         String msg = String.format(context.isOptionNashornCompatibilityMode() ? "%s is not a constructor function" : "%s is not a constructor", JSRuntime.safeToString(object));
         return JSException.create(JSErrorType.TypeError, msg, originatingNode);

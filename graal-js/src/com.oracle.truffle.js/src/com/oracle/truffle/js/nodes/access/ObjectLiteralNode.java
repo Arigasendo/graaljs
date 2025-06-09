@@ -1189,6 +1189,10 @@ public final class ObjectLiteralNode extends JavaScriptNode {
         return new ObjectLiteralDataMemberNode(name, isStatic, enumerable ? JSAttributes.getDefault() : JSAttributes.getDefaultNotEnumerable(), valueNode, isField);
     }
 
+    public static ObjectLiteralMemberNode newStructFieldDataMember(TruffleString name, JavaScriptNode valueNode) {
+        return new ObjectLiteralDataMemberNode(name, false, JSAttributes.getForStructProperty(), valueNode, true);
+    }
+
     public static ObjectLiteralMemberNode newAutoAccessor(TruffleString name, boolean isStatic, boolean enumerable, JavaScriptNode valueNode) {
         return new AutoAccessorDataMemberNode(name, isStatic, enumerable ? JSAttributes.getDefault() : JSAttributes.getDefaultNotEnumerable(), valueNode);
     }

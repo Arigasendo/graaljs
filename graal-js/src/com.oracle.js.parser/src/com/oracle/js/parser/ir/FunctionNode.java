@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010, 2022, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2010, 2025, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -207,7 +207,7 @@ public final class FunctionNode extends LexicalContextExpression implements Flag
     public static final int NO_FUNCTION_SELF = IS_PROGRAM | IS_ANONYMOUS | IS_DECLARED | IS_METHOD;
 
     /** Is this the constructor method? */
-    public static final int IS_CLASS_CONSTRUCTOR = 1 << 21;
+    public static final int IS_CLASS_OR_STRUCT_CONSTRUCTOR = 1 << 21;
 
     /** Is this the constructor of a subclass (i.e., a class with an extends declaration)? */
     public static final int IS_DERIVED_CONSTRUCTOR = 1 << 22;
@@ -235,6 +235,9 @@ public final class FunctionNode extends LexicalContextExpression implements Flag
 
     /** Is this function a class field/static initializer? */
     public static final int IS_CLASS_FIELD_INITIALIZER = 1 << 30;
+
+    /** Is this a method inside a struct? */
+    public static final int IS_IN_STRUCT = 1 << 31;
 
     /**
      * All flags that may be set during parsing of an arrow head cover grammar and that have to be
@@ -710,7 +713,15 @@ public final class FunctionNode extends LexicalContextExpression implements Flag
     }
 
     public boolean isClassConstructor() {
-        return getFlag(IS_CLASS_CONSTRUCTOR);
+        return isClassOrStructConstructor() && !getFlag(IS_IN_STRUCT);
+    }
+
+    public boolean isStructConstructor() {
+        return isClassOrStructConstructor() && getFlag(IS_IN_STRUCT);
+    }
+
+    public boolean isClassOrStructConstructor() {
+        return getFlag(IS_CLASS_OR_STRUCT_CONSTRUCTOR);
     }
 
     public boolean isDerivedConstructor() {
@@ -790,7 +801,7 @@ public final class FunctionNode extends LexicalContextExpression implements Flag
     }
 
     public boolean needsNewTarget() {
-        return usesNewTarget() || hasDirectSuper() || (!isArrow() && !isProgram() && (hasEval() || hasArrowEval()));
+        return usesNewTarget() || hasDirectSuper() || (!isArrow() && !isProgram() && (hasEval() || hasArrowEval())) || (isStructConstructor() && !hasDirectSuper());
     }
 
     public boolean needsSuper() {
@@ -803,5 +814,9 @@ public final class FunctionNode extends LexicalContextExpression implements Flag
 
     public boolean hasClosures() {
         return getFlag(HAS_CLOSURES);
+    }
+
+    public boolean isStructMethod() {
+        return getFlag(IS_IN_STRUCT) && getFlag(IS_METHOD);
     }
 }
